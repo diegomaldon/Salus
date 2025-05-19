@@ -1,2 +1,2 @@
-# Sales
+# Salus
 Invent@SU 2025
