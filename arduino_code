@@ -1,0 +1,109 @@
+#include <WiFi.h>
+#include <HTTPClient.h>    // <-- added
+
+// CONFIGURATION
+static const int MAX_APS      = 20;
+const char*     ssid         = "AirOrangeX";
+const char*     password     = "";                 // open network
+const int       BUTTON_PIN   = 2;                  // D2
+
+const char* scriptUrl = "https://script.google.com/macros/s/AKfycbwiNSSwQaXGuuTBSikgZ4d-jrw25LaB5vuL9okGhuIfYBXYOX5C95GjtAkmK9yqTMYgjg/exec";
+
+// Storage for your last scan
+struct AP {
+  String   ssid;
+  int32_t  rssi;
+  bool     open;
+  String   bssid;
+  int      channel;
+};
+
+AP  lastScan[MAX_APS];
+int lastCount = 0;
+
+void setup() {
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  Serial.begin(115200);
+  while (!Serial);
+
+  // 1) Connect to Wi-Fi
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print('.');
+  }
+  Serial.println();
+  Serial.printf("ESP32 IP  : %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("ESP32 MAC : %s\n", WiFi.macAddress().c_str());
+}
+
+void loop() {
+  // Button is active-LOW; on press:
+  if (digitalRead(BUTTON_PIN) == LOW) {
+    delay(50);  // simple debounce
+    if (digitalRead(BUTTON_PIN) == LOW) {
+      // 1) (Re)scan networks
+      doScan();
+      // 2) POST results to Google Sheets
+      sendToSheet();
+      // 3) wait until release
+      while (digitalRead(BUTTON_PIN) == LOW) {
+        delay(10);
+      }
+    }
+  }
+}
+
+// Perform a Wi-Fi scan and cache up to MAX_APS results
+void doScan() {
+  Serial.println("Scanning for Wi-Fi networks…");
+  int n = WiFi.scanNetworks();
+  lastCount = min(n, MAX_APS);
+
+  for (int i = 0; i < lastCount; i++) {
+    lastScan[i].ssid    = WiFi.SSID(i);
+    lastScan[i].rssi    = WiFi.RSSI(i);
+    lastScan[i].open    = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+    lastScan[i].bssid   = WiFi.BSSIDstr(i);
+    lastScan[i].channel = WiFi.channel(i);
+  }
+
+  Serial.printf("Scan complete: found %d network(s), cached top %d\n",
+                n, lastCount);
+}
+
+// Build a single-line payload and POST it to your Apps Script
+void sendToSheet() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected, skipping POST");
+    return;
+  }
+
+  // Build a semicolon-separated list of "SSID,RSSI,BSSID"
+  String payload = "";
+  for (int i = 0; i < lastCount; i++) {
+    auto &a = lastScan[i];
+    // e.g. MyWiFi,-42,AA:BB:CC:DD:EE:FF
+    payload += a.ssid + "," + String(a.rssi) + "," + a.bssid;
+    if (i < lastCount - 1) payload += ";";
+  }
+
+  HTTPClient http;
+  http.begin(scriptUrl);
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+  // URL-encoded form field named "message"
+  String postData = "message=" + payload;
+  int code = http.POST(postData);
+
+  if (code > 0) {
+    Serial.printf("POST to Sheet, HTTP code: %d\n", code);
+    Serial.println("Response: " + http.getString());
+  } else {
+    Serial.printf("POST failed, error: %d\n", code);
+  }
+
+  http.end();
+}
